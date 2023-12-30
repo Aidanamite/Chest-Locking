@@ -1,0 +1,38 @@
+{
+  "name": "Chest Locking",
+  "author": "Aidanamite",
+  "description": "Allow you to lock players out of your chests",
+  "version": "1.0.1",
+  "license": "GNU AGPLv3",
+  "icon": "icon.png",
+  "banner": "banner.jpg",
+  "gameVersion": "1.0",
+  "requiredByAllPlayers": true,
+  "updateUrl": "https://www.raftmodding.com/api/v1/mods/chest-locking/version.txt",
+  "isModPermanent": false,
+  "excludedFiles": [],
+  "modSettings": [
+    {
+      "type": "keybind",
+      "name": "lock",
+      "text": "Toggle Chest Lock",
+      "access": "both",
+      "mainDefault": "l"
+    },
+    {
+      "type": "keybind",
+      "name": "public",
+      "text": "Prevent Lock",
+      "access": "both",
+      "mainDefault": "k"
+    },
+    {
+      "type": "data",
+      "name": "locks",
+      "access": "world",
+      "default": {
+        "data": ""
+      }
+    }
+  ]
+}
