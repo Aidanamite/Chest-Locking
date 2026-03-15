@@ -216,6 +216,7 @@ public abstract class CustomMessage
     public void Send(Network_UserId userId) => ChestLocking.instance.SendNetworkMessageToPlayer(this, userId);
 }
 
+[Serializable]
 public class Message_Storage_SetLock : CustomMessage
 {
     uint objectIndex;
@@ -242,6 +243,7 @@ public class Message_Storage_SetLock : CustomMessage
     }
 }
 
+[Serializable]
 public class Message_Storage_RequestLocks : CustomMessage
 {
     public override void Execute(Network_UserId from)
@@ -251,6 +253,7 @@ public class Message_Storage_RequestLocks : CustomMessage
     }
 }
 
+[Serializable]
 public class Message_Storage_AllLocks : CustomMessage
 {
     Dictionary<uint,ulong> data;
