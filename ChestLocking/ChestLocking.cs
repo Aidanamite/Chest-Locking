@@ -6,10 +6,10 @@ using UnityEngine.UI;
 using HMLLibrary;
 using RaftModLoader;
 using System;
-using static UnityEngine.InputSystem.InputRemoting;
 using System.Text;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using _ChestLocking;
 
 public class ChestLocking : Mod
 {
@@ -24,6 +24,7 @@ public class ChestLocking : Mod
     public static bool PublicKey => ExtraSettingsAPI_Loaded ? MyInput.GetButtonDown(publicKey) : Input.GetKeyDown(KeyCode.K);
     public static KeyCode LockMainKey => ExtraSettingsAPI_Loaded ? lockKeyBind.MainKey : KeyCode.L;
     public static KeyCode PublicMainKey => ExtraSettingsAPI_Loaded ? publicKeyBind.MainKey : KeyCode.K;
+    public static Network_UserId ContextAwareLocalId => Patch_StorageManagerMessage.Context ?? ComponentManager<Raft_Network>.Value.LocalSteamID;
     public override bool CanUnload(ref string message)
     {
         if (!Raft_Network.InMenuScene)
@@ -50,6 +51,7 @@ public class ChestLocking : Mod
 
     public override bool OnNetworkMessage(object message, Network_UserId from, string modslug)
     {
+        //Debug.Log($"Recieved {message.GetType().FullName} from {from} ({(ComponentManager<Raft_Network>.Value.HostID == from ? "Host" : "Client")})");
         if (message is CustomMessage msg)
         {
             msg.Execute(from);
@@ -60,10 +62,9 @@ public class ChestLocking : Mod
 
     public static bool CanChangeLock(uint objectIndex, ulong playerId)
     {
-        if (!ChestLocks.ContainsKey(objectIndex))
+        if (!ChestLocks.TryGetValue(objectIndex,out var id))
             return false;
-        var l = ChestLocks[objectIndex];
-        return l == 0 || l == playerId;
+        return id == 0 || id == playerId;
     }
 
     public override void Event_ReturnToMainMenu()
@@ -85,7 +86,7 @@ public class ChestLocking : Mod
         string str = "World loaded with locks:";
         foreach (var lockData in ChestLocks)
             str += "\n - " + lockData.Key + " locked by " + lockData.Value;
-        Debug.Log(str);
+        //Debug.Log(str);
     }
 
     public void ExtraSettingsAPI_Load()
@@ -108,7 +109,7 @@ public class ChestLocking : Mod
     [MethodImpl(MethodImplOptions.NoInlining)]
     public void ExtraSettingsAPI_SetDataValue(string SettingName, string subname, string value) { }
 
-    public static string GetLockData() => ChestLocks.Join(x => x.Key + "," + x.Value, "|");
+    public static string GetLockData() => ExtentionMethods.Join(ChestLocks, x => x.Key + "," + x.Value, "|");
     public static void SetLockFromData(string data) => ChestLocks = new Dictionary<uint, ulong>(data.Split('|').Select(x =>
     {
         var ind = x.IndexOf(',');
@@ -118,150 +119,181 @@ public class ChestLocking : Mod
     }).Where(x => x.Key != 0));
 }
 
-static class ExtentionMethods
+namespace _ChestLocking
 {
-    public static bool IsLocked(this Storage_Small storage)
+    static class ExtentionMethods
     {
-        var lockOwner = ChestLocking.ChestLocks[storage.ObjectIndex];
-        return lockOwner != 0 && lockOwner != ulong.MaxValue && lockOwner != ComponentManager<Raft_Network>.Value.localSteamID;
-    }
-    public static void SetLock(this Storage_Small storage, Network_UserId userID)
-    {
-        var msg = new Message_Storage_SetLock(storage, userID);
-        if (Raft_Network.IsHost)
+        public static bool IsLocked(this Storage_Small storage)
         {
-            msg.Execute(userID);
-            msg.Broadcast();
-        } else
-            msg.Send(ComponentManager<Raft_Network>.Value.HostID);
-    }
-
-    public static void Broadcast(this Message message, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.RPC(message, Target.Other, EP2PSend.k_EP2PSendReliable, channel);
-    public static void Send(this Message message, Network_UserId userId, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.SendP2P(userId, message, EP2PSend.k_EP2PSendReliable, channel);
-    
-    public static string Join<T>(this IEnumerable<T> values, Func<T, string> converter = null, string delimeter = ", ")
-    {
-        var str = new StringBuilder();
-        bool first = false;
-        foreach (var v in values)
-        {
-            if (first)
-                first = false;
-            else
-                str.Append(delimeter);
-            if (converter == null)
-                str.Append(v);
-            else
-                str.Append(converter(v));
+            return ChestLocking.ChestLocks.TryGetValue(storage.ObjectIndex, out var lockOwner) && lockOwner != 0 && lockOwner != ulong.MaxValue && lockOwner != ChestLocking.ContextAwareLocalId;
         }
-        return str.ToString();
-    }
-}
-
-[HarmonyPatch(typeof(Storage_Small))]
-public class Patch_Storage_Small
-{
-    [HarmonyPatch("IsOpen", MethodType.Getter)]
-    [HarmonyPostfix]
-    static void IsOpen(Storage_Small __instance, ref bool __result)
-    {
-        if (!__result && ChestLocking.ChestLocks.ContainsKey(__instance.ObjectIndex))
-            __result = __instance.IsLocked();
-    }
-
-
-    [HarmonyPatch("OnFinishedPlacement")]
-    [HarmonyPostfix]
-    static void OnFinishedPlacement(Storage_Small __instance) => ChestLocking.ChestLocks.Add(__instance.ObjectIndex, 0);
-
-
-    [HarmonyPatch("OnDestroy")]
-    [HarmonyPostfix]
-    static void OnDestroy(Storage_Small __instance) => ChestLocking.ChestLocks.Remove(__instance.ObjectIndex);
-
-
-    [HarmonyPatch("OnIsRayed")]
-    [HarmonyPostfix]
-    static void OnIsRayed(Storage_Small __instance, CanvasHelper ___canvas)
-    {
-        if (CanvasHelper.ActiveMenu == MenuType.None && !PlayerItemManager.IsBusy && ___canvas.CanOpenMenu && Helper.LocalPlayerIsWithinDistance(__instance.transform.position, Player.UseDistance + 0.5f))
+        public static void SetLock(this Storage_Small storage, Network_UserId userID)
         {
-            var c = ChestLocking.CanChangeLock(__instance.ObjectIndex, ComponentManager<Raft_Network>.Value.localSteamID);
-            if (c)
-                ___canvas.displayTextManager.ShowText(ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 ? "Lock Chest" : "Unlock Chest", ChestLocking.LockMainKey, 1, 0, false);
-            else if (Raft_Network.IsHost)
-                ___canvas.displayTextManager.ShowText("Force Unlock Chest", ChestLocking.LockMainKey, 1, 0, false);
-            if (ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 && c)
-                ___canvas.displayTextManager.ShowText("Set as Public Chest", ChestLocking.PublicMainKey, 2, 0, false);
-            if ((c || Raft_Network.IsHost) && ChestLocking.LockKey)
+            var msg = new Message_Storage_SetLock(storage, userID);
+            if (Raft_Network.IsHost)
             {
-                ___canvas.displayTextManager.HideDisplayTexts();
-                __instance.SetLock((c && ChestLocking.ChestLocks[__instance.ObjectIndex] == 0) ? ComponentManager<Raft_Network>.Value.localSteamID : 0);
+                msg.Execute(ComponentManager<Raft_Network>.Value.LocalSteamID);
+                msg.Broadcast();
             }
-            else if (c && ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 && ChestLocking.PublicKey)
+            else
+                msg.Send(ComponentManager<Raft_Network>.Value.HostID);
+        }
+
+        public static void Broadcast(this Message message, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.RPC(message, Target.Other, EP2PSend.k_EP2PSendReliable, channel);
+        public static void Send(this Message message, Network_UserId userId, NetworkChannel channel = NetworkChannel.Channel_Game) => ComponentManager<Raft_Network>.Value.SendP2P(userId, message, EP2PSend.k_EP2PSendReliable, channel);
+
+        public static string Join<T>(this IEnumerable<T> values, Func<T, string> converter = null, string delimeter = ", ")
+        {
+            var str = new StringBuilder();
+            bool first = false;
+            foreach (var v in values)
             {
-                ___canvas.displayTextManager.HideDisplayTexts();
-                __instance.SetLock(ulong.MaxValue);
+                if (first)
+                    first = false;
+                else
+                    str.Append(delimeter);
+                if (converter == null)
+                    str.Append(v);
+                else
+                    str.Append(converter(v));
             }
+            return str.ToString();
         }
     }
-}
 
-[Serializable]
-public abstract class CustomMessage
-{
-    public abstract void Execute(Network_UserId from);
-
-    public void Broadcast() => ChestLocking.instance.SendNetworkMessage(this);
-    public void Send(Network_UserId userId) => ChestLocking.instance.SendNetworkMessageToPlayer(this, userId);
-}
-
-[Serializable]
-public class Message_Storage_SetLock : CustomMessage
-{
-    uint objectIndex;
-    ulong playerId;
-    public Message_Storage_SetLock(Storage_Small box, ulong playerID)
+    [HarmonyPatch(typeof(Storage_Small))]
+    public class Patch_Storage_Small
     {
-        objectIndex = box.ObjectIndex;
-        playerId = playerID;
+        [HarmonyPatch("IsOpen", MethodType.Getter)]
+        [HarmonyPostfix]
+        static void IsOpen(Storage_Small __instance, ref bool __result)
+        {
+            if (!__result)
+                __result = __instance.IsLocked();
+        }
+
+
+        [HarmonyPatch("OnFinishedPlacement")]
+        [HarmonyPostfix]
+        static void OnFinishedPlacement(Storage_Small __instance) => ChestLocking.ChestLocks[__instance.ObjectIndex] = 0;
+
+
+        [HarmonyPatch("OnDestroy")]
+        [HarmonyPostfix]
+        static void OnDestroy(Storage_Small __instance) => ChestLocking.ChestLocks.Remove(__instance.ObjectIndex);
+
+
+        [HarmonyPatch("OnIsRayed")]
+        [HarmonyPostfix]
+        static void OnIsRayed(Storage_Small __instance)
+        {
+            if (CanvasHelper.ActiveMenu == MenuType.None && !PlayerItemManager.IsBusy && __instance.canvas.CanOpenMenu && Helper.LocalPlayerIsWithinDistance(__instance.transform.position, Player.UseDistance + 0.5f))
+            {
+                var c = ChestLocking.CanChangeLock(__instance.ObjectIndex, ComponentManager<Raft_Network>.Value.LocalSteamID);
+                if (c)
+                    __instance.canvas.displayTextManager.ShowText(ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 ? "Lock Chest" : "Unlock Chest", ChestLocking.LockMainKey, 1, 0, false);
+                else if (Raft_Network.IsHost)
+                    __instance.canvas.displayTextManager.ShowText("Force Unlock Chest", ChestLocking.LockMainKey, 1, 0, false);
+                if (ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 && c)
+                    __instance.canvas.displayTextManager.ShowText("Set as Public Chest", ChestLocking.PublicMainKey, 2, 0, false);
+                if ((c || Raft_Network.IsHost) && ChestLocking.LockKey)
+                {
+                    __instance.canvas.displayTextManager.HideDisplayTexts();
+                    __instance.SetLock((c && ChestLocking.ChestLocks[__instance.ObjectIndex] == 0) ? ComponentManager<Raft_Network>.Value.LocalSteamID : 0);
+                }
+                else if (c && ChestLocking.ChestLocks[__instance.ObjectIndex] == 0 && ChestLocking.PublicKey)
+                {
+                    __instance.canvas.displayTextManager.HideDisplayTexts();
+                    __instance.SetLock(ulong.MaxValue);
+                }
+            }
+        }
     }
 
-    public override void Execute(Network_UserId from)
+    [HarmonyPatch(typeof(StorageManager), "Deserialize")]
+    static class Patch_StorageManagerMessage
     {
-        if (Raft_Network.IsHost && !ChestLocking.CanChangeLock(objectIndex, playerId))
-            return;
-        ChestLocking.ChestLocks[objectIndex] = playerId;
-        Debug.Log("Set object " + objectIndex + " with lock " + playerId);
-        if (Raft_Network.IsHost && ChestLocking.ExtraSettingsAPI_Loaded)
-            ChestLocking.instance.ExtraSettingsAPI_SetDataValue("locks", "data", ChestLocking.GetLockData());
-        var sM = RAPI.GetLocalPlayer().StorageManager;
-        if (sM.currentStorage != null && sM.currentStorage.ObjectIndex == objectIndex)
-            sM.CloseStorage(sM.currentStorage);
-        if (Raft_Network.IsHost)
-            Broadcast();
+        public static Network_UserId? Context;
+        static void Prefix(Network_UserId remoteID, out Network_UserId? __state)
+        {
+            __state = Context;
+            if (Raft_Network.IsHost)
+                Context = remoteID;
+        }
+        static void Finalizer(Network_UserId? __state) => Context = __state;
     }
-}
 
-[Serializable]
-public class Message_Storage_RequestLocks : CustomMessage
-{
-    public override void Execute(Network_UserId from)
+    [HarmonyPatch(typeof(BlockCreator), "RemoveBlockNetwork")]
+    static class Patch_BlockCreator
     {
-        if (Raft_Network.IsHost)
-            new Message_Storage_AllLocks().Send(from);
+        static bool Prefix(Block block, Network_Player playerRemovingBlock) => !(!ChestLocking.CanChangeLock(block.ObjectIndex, playerRemovingBlock?.steamID ?? 0));
     }
-}
 
-[Serializable]
-public class Message_Storage_AllLocks : CustomMessage
-{
-    Dictionary<uint,ulong> data;
-    public Message_Storage_AllLocks() => data = new Dictionary<uint, ulong>(ChestLocking.ChestLocks);
-
-    public override void Execute(Network_UserId from)
+    [HarmonyPatch(typeof(Block), "IsStable")]
+    static class Patch_BlockStable
     {
-        if (!Raft_Network.IsHost)
-            ChestLocking.ChestLocks = new Dictionary<uint, ulong>(data);
+        static void Postfix(Block __instance, ref bool __result) => __result = __result || (ChestLocking.ChestLocks.TryGetValue(__instance.ObjectIndex, out var owner) && owner != 0);
+    }
+
+    [Serializable]
+    public abstract class CustomMessage
+    {
+        public abstract void Execute(Network_UserId from);
+
+        public void Broadcast() => ChestLocking.instance.SendNetworkMessage(this);
+        public void Send(Network_UserId userId) => ChestLocking.instance.SendNetworkMessageToPlayer(this, userId);
+    }
+
+    [Serializable]
+    public class Message_Storage_SetLock : CustomMessage
+    {
+        [SerializeField]
+        uint objectIndex;
+        [SerializeField]
+        ulong playerId;
+        public Message_Storage_SetLock(Storage_Small box, ulong playerID)
+        {
+            objectIndex = box.ObjectIndex;
+            playerId = playerID;
+        }
+
+        public override void Execute(Network_UserId from)
+        {
+            if (Raft_Network.IsHost && from != ComponentManager<Raft_Network>.Value.LocalSteamID && !ChestLocking.CanChangeLock(objectIndex, from))
+                return;
+            ChestLocking.ChestLocks[objectIndex] = playerId;
+            //Debug.Log("Set object " + objectIndex + " with lock " + playerId);
+            if (Raft_Network.IsHost && ChestLocking.ExtraSettingsAPI_Loaded)
+                ChestLocking.instance.ExtraSettingsAPI_SetDataValue("locks", "data", ChestLocking.GetLockData());
+            var sM = RAPI.GetLocalPlayer().StorageManager;
+            if (sM.currentStorage != null && sM.currentStorage.ObjectIndex == objectIndex)
+                sM.CloseStorage(sM.currentStorage);
+            if (Raft_Network.IsHost)
+                Broadcast();
+        }
+    }
+
+    [Serializable]
+    public class Message_Storage_RequestLocks : CustomMessage
+    {
+        public override void Execute(Network_UserId from)
+        {
+            if (Raft_Network.IsHost)
+                new Message_Storage_AllLocks().Send(from);
+        }
+    }
+
+    [Serializable]
+    public class Message_Storage_AllLocks : CustomMessage
+    {
+        [SerializeField]
+        Dictionary<uint, ulong> data;
+        public Message_Storage_AllLocks() => data = new Dictionary<uint, ulong>(ChestLocking.ChestLocks);
+
+        public override void Execute(Network_UserId from)
+        {
+            if (!Raft_Network.IsHost)
+                ChestLocking.ChestLocks = new Dictionary<uint, ulong>(data);
+        }
     }
 }
