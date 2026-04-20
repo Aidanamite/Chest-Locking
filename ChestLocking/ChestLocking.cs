@@ -223,12 +223,6 @@ namespace _ChestLocking
         static void Finalizer(Network_UserId? __state) => Context = __state;
     }
 
-    [HarmonyPatch(typeof(BlockCreator), "RemoveBlockNetwork")]
-    static class Patch_BlockCreator
-    {
-        static bool Prefix(Block block, Network_Player playerRemovingBlock) => !(!ChestLocking.CanChangeLock(block.ObjectIndex, playerRemovingBlock?.steamID ?? 0));
-    }
-
     [HarmonyPatch(typeof(Block), "IsStable")]
     static class Patch_BlockStable
     {
